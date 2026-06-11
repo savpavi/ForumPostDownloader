@@ -4,9 +4,9 @@
 // @namespace https://github.com/SkyCloudDev
 // @author SkyCloudDev
 // @description Downloads images and videos from posts
-// @version 3.18
-// @updateURL https://github.com/SkyCloudDev/ForumPostDownloader/raw/main/dist/build.user.js
-// @downloadURL https://github.com/SkyCloudDev/ForumPostDownloader/raw/main/dist/build.user.js
+// @version 3.19
+// @updateURL https://github.com/savpavi/ForumPostDownloader/raw/main/dist/build.user.js
+// @downloadURL https://github.com/savpavi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
 // @license WTFPL; http://www.wtfpl.net/txt/copying/
 // @match https://simpcity.cr/threads/*
@@ -114,6 +114,17 @@
 // @connect filester.sh
 // @connect filester.si
 // @connect filester.gg
+// @connect imgur.com
+// @connect i.imgur.com
+// @connect imgur.io
+// @connect catbox.moe
+// @connect files.catbox.moe
+// @connect litter.catbox.moe
+// @connect streamable.com
+// @connect api.streamable.com
+// @connect erome.com
+// @connect imgchest.com
+// @connect cdn.imgchest.com
 // @run-at document-start
 // @grant GM_xmlhttpRequest
 // @grant GM_download
@@ -715,7 +726,14 @@ const h = {
    */
     unique: (items, cb) => {
         if (cb) {
-            return items.reduce((acc, item) => (!acc.find(i => i[byKey] === item[byKey]) ? acc.concat(item) : acc), []);
+            const key = typeof cb === 'function' ? cb : (i => i[cb]);
+            const seen = new Set();
+            return items.reduce((acc, item) => {
+                const k = key(item);
+                if (seen.has(k)) return acc;
+                seen.add(k);
+                return acc.concat(item);
+            }, []);
         }
 
         return items.reduce((acc, item) => (acc.indexOf(item) < 0 ? acc.concat(item) : acc), []);
@@ -994,10 +1012,15 @@ const parsers = {
         /**
      * @returns {string}
      */
-        parseTitle: () => {
+        parseTitle: (root) => {
+            // Thread downloader arka planda başka bir başlığı işlerken downloadPost()
+            // parseTitle()'ı argümansız çağırır -> override o başlığın adını verir.
+            if (!root && window.__xfpdTitleOverride) return window.__xfpdTitleOverride;
+            const titleEl = (root || document).querySelector('.p-title-value');
+            if (!titleEl) return window.__xfpdTitleOverride || 'thread';
             const emojisPattern =
                   /[\u{1f300}-\u{1f5ff}\u{1f900}-\u{1f9ff}\u{1f600}-\u{1f64f}\u{1f680}-\u{1f6ff}\u{2600}-\u{26ff}\u{2700}-\u{27bf}\u{1f191}-\u{1f251}\u{1f004}\u{1f0cf}\u{1f170}-\u{1f171}\u{1f17e}-\u{1f17f}\u{1f18e}\u{3030}\u{2b50}\u{2b55}\u{2934}-\u{2935}\u{2b05}-\u{2b07}\u{2b1b}-\u{2b1c}\u{3297}\u{3299}\u{303d}\u{00a9}\u{00ae}\u{2122}\u{23f3}\u{24c2}\u{23e9}-\u{23ef}\u{25b6}\u{23f8}-\u{23fa}]/gu;
-            let parsed = h.stripTags(['a', 'span'], h.element('.p-title-value').innerHTML).replace('/\n/g', '');
+            let parsed = h.stripTags(['a', 'span'], titleEl.innerHTML).replace('/\n/g', '');
             return !settings.naming.allowEmojis ? parsed.replace(emojisPattern, settings.naming.invalidCharSubstitute).trim() : parsed.trim();
         },
         /**
@@ -1970,6 +1993,12 @@ const hosts = [
     ['Pomf2:File', [/pomf2.lain.la/]],
     ['Nitter:image', [/nitter\.(.{1,20})\/pic/]],
     ['Twitter:image', [/([~an@.]+)?twimg.com\//]],
+    ['Imgur:image', [/(i\.)?imgur\.(com|io)\/(?!a\/|gallery\/|t\/)[a-zA-Z0-9]{5,}(\.[a-z0-9]{2,4})?/]],
+    ['Erome:image', [/erome\.com\/a\/[a-zA-Z0-9]+/]],
+    ['Saint:video', [/saint\d*\.(su|cr|to)\/(embed|e|d|watch)\/[a-zA-Z0-9]+/]],
+    ['Catbox:File', [/(files|litter)\.catbox\.moe\/[a-zA-Z0-9]+\.[a-zA-Z0-9]+/]],
+    ['Streamable:video', [/streamable\.com\/(e\/)?[a-zA-Z0-9]+/]],
+    ['Imgchest:image', [/imgchest\.com\/p\/[a-zA-Z0-9]+/]],
     ['Pixhost:image', [/(t|img)(\d+)?\.pixhost.to\//, /pixhost.to\/gallery\//]],
     ['Imagebam:image', [/imagebam.com\/(view|gallery)/]],
     ['Imagebam:full embed', [/images\d.imagebam.com/]],
@@ -2263,8 +2292,6 @@ const resolvers = [
                 };
 
                 let authenticated = false;
-
-                spoilers = ['ramona'];
 
                 for (const spoiler of spoilers) {
                     const { source: src, dom: d } = await attemptWithPassword(spoiler.trim());
@@ -3463,6 +3490,133 @@ if (page === 1) {
         },
     ],
     [[/public.onlyfans.com\/files/], async url => url],
+    [
+        [/(i\.)?imgur\.(com|io)\//],
+        async (url, http) => {
+            url = String(url || '').replace(/^http:/i, 'https:');
+            // Direkt CDN görseli -> olduğu gibi (query'yi at)
+            if (/i\.imgur\.(com|io)\//i.test(url)) {
+                return url.replace(/\?.*$/, '');
+            }
+            // imgur.com/<id> tekil sayfa -> og:image'dan gerçek görsel
+            try {
+                const { dom } = await http.get(url);
+                const og =
+                    dom?.querySelector('meta[property="og:image"]')?.getAttribute('content') ||
+                    dom?.querySelector('link[rel="image_src"]')?.getAttribute('href');
+                if (og) return og.replace(/\?.*$/, '').replace(/^http:/i, 'https:');
+            } catch (e) {}
+            return url;
+        },
+    ],
+    /* ---- Catbox / Litterbox (direkt dosya, passthrough) ---- */
+    [[/(files|litter)\.catbox\.moe\//], async url => String(url || '').replace(/^http:/i, 'https:')],
+
+    /* ---- Streamable (video) ---- */
+    [
+        [/streamable\.com\//],
+        async (url, http) => {
+            const m = /streamable\.com\/(?:e\/)?([a-z0-9]+)/i.exec(url);
+            const id = m && m[1] ? m[1] : null;
+            if (!id) return url;
+            // 1) Resmi API
+            try {
+                const { source } = await http.get(`https://api.streamable.com/videos/${id}`, {}, {}, 'text');
+                const j = JSON.parse(source || '{}');
+                let f = (j && j.files && (j.files.mp4 || j.files['mp4-mobile']) || {}).url;
+                if (f) return f.startsWith('//') ? 'https:' + f : f;
+            } catch (e) {}
+            // 2) Sayfadan og:video / <source>
+            try {
+                const { dom } = await http.get(`https://streamable.com/${id}`);
+                let og =
+                    dom?.querySelector('meta[property="og:video"], meta[property="og:video:url"]')?.getAttribute('content') ||
+                    dom?.querySelector('video source')?.getAttribute('src') ||
+                    dom?.querySelector('video')?.getAttribute('src');
+                if (og) return og.startsWith('//') ? 'https:' + og : og;
+            } catch (e) {}
+            return url;
+        },
+    ],
+
+    /* ---- Saint (video) ---- */
+    [
+        [/saint\d*\.(su|cr|to)\//],
+        async (url, http) => {
+            try {
+                const { dom, source } = await http.get(url, {}, { Referer: url });
+                let src =
+                    dom?.querySelector('video source')?.getAttribute('src') ||
+                    dom?.querySelector('video')?.getAttribute('src') ||
+                    dom?.querySelector('meta[property="og:video"]')?.getAttribute('content');
+                if (!src && source) {
+                    const mm = /(https?:\/\/[^"'\s]+\.mp4[^"'\s]*)/i.exec(source);
+                    if (mm) src = mm[1];
+                }
+                if (src) return src.startsWith('//') ? 'https:' + src : src;
+            } catch (e) {}
+            return url;
+        },
+    ],
+
+    /* ---- Erome (resim + video albümü) ---- */
+    [
+        [/erome\.com\/a\//],
+        async (url, http) => {
+            try {
+                const { dom, source } = await http.get(url);
+                const resolved = [];
+                dom?.querySelectorAll('video source[src], video[src]')?.forEach(s => {
+                    const u = s.getAttribute('src');
+                    if (u) resolved.push(u.startsWith('//') ? 'https:' + u : u);
+                });
+                // Erome'da tam çözünürlük data-src'de durur
+                dom?.querySelectorAll('img[data-src], .img[data-src], .media-group [data-src]')?.forEach(i => {
+                    const u = i.getAttribute('data-src');
+                    if (u) resolved.push(u.startsWith('//') ? 'https:' + u : u);
+                });
+                const uniq = [...new Set(resolved.filter(Boolean))];
+                const folderName = (
+                    dom?.querySelector('meta[property="og:title"]')?.getAttribute('content') ||
+                    dom?.querySelector('h1')?.textContent ||
+                    h.basename(url)
+                ).trim();
+                return { dom, source, folderName, resolved: uniq };
+            } catch (e) {
+                return url;
+            }
+        },
+    ],
+
+    /* ---- Imgchest (resim albümü) ---- */
+    [
+        [/imgchest\.com\/p\//],
+        async (url, http) => {
+            try {
+                const { dom, source } = await http.get(url);
+                const resolved = [];
+                dom?.querySelectorAll('img[data-src*="imgchest"], img[src*="imgchest"], a[href*="cdn.imgchest"]')?.forEach(el => {
+                    const u = el.getAttribute('data-src') || el.getAttribute('src') || el.getAttribute('href');
+                    if (u && /imgchest\.com\/files|cdn\.imgchest\.com/i.test(u)) {
+                        resolved.push(u.startsWith('//') ? 'https:' + u : u);
+                    }
+                });
+                if (source) {
+                    (source.match(/https?:\/\/cdn\.imgchest\.com\/files\/[^\s"'<>\\)]+/gi) || []).forEach(u => resolved.push(u));
+                }
+                const uniq = [...new Set(resolved.filter(Boolean))];
+                const folderName = (
+                    dom?.querySelector('meta[property="og:title"]')?.getAttribute('content') ||
+                    dom?.querySelector('h1')?.textContent ||
+                    h.basename(url)
+                ).trim();
+                return { dom, source, folderName, resolved: uniq };
+            } catch (e) {
+                return url;
+            }
+        },
+    ],
+
     [
         [/([\w-]+\.)?turbo\.cr\/embed/],
         async (url, http) => {
@@ -6551,7 +6705,7 @@ if (tmp.length) {
                         // Handle duplicates within this run.
                         const same = filenames.filter(f => f && (f.original === basename || f.name === basename));
                         if (same.length) {
-                            const ext2 = h.extension(basename);
+                            const ext2 = h.ext(basename);
                             if (ext2) {
                                 basename = `${h.fnNoExt(basename)} (${same.length + 1}).${ext2}`;
                             } else {
@@ -7684,31 +7838,30 @@ if (needZipBlob) {
 
             if (blob) {
                 if (postSettings.zipped) {
-                    if (isFF) {
-                        saveAs(blob, mainZipName);
-                    } else {
-                        await new Promise(resolve => {
-                            const url = URL.createObjectURL(blob);
-                            GM_download({
-                                url,
-                                name: `${title}/#${postNumber}.zip`,
-                                onload: () => {
-                                    try { URL.revokeObjectURL(url); } catch (e) {}
-                                    blob = null;
-                                    resolve();
-                                },
-                                onerror: response => {
-                                    try { URL.revokeObjectURL(url); } catch (e) {}
-                                    console.log(`Error writing file to disk. There may be more details below.`);
-                                    console.log(response);
-                                    console.log('Trying to write using FileSaver...');
-                                    try { saveAs(blob, mainZipName); } catch (e) {}
-                                    console.log('Done!');
-                                    resolve();
-                                },
-                            });
+                    // Her iki tarayıcıda da ZIP'i başlık klasörünün altına yaz:
+                    //   <Başlık>/<Başlık> #<post>.zip
+                    // Alt klasör yazılamazsa (örn. TM "native" indirme modu) düz isimle saveAs'e düş.
+                    await new Promise(resolve => {
+                        const url = URL.createObjectURL(blob);
+                        GM_download({
+                            url,
+                            name: `${title}/${mainZipName}`,
+                            onload: () => {
+                                try { URL.revokeObjectURL(url); } catch (e) {}
+                                blob = null;
+                                resolve();
+                            },
+                            onerror: response => {
+                                try { URL.revokeObjectURL(url); } catch (e) {}
+                                console.log(`Error writing file to disk. There may be more details below.`);
+                                console.log(response);
+                                console.log('Trying to write using FileSaver...');
+                                try { saveAs(blob, mainZipName); } catch (e) {}
+                                console.log('Done!');
+                                resolve();
+                            },
                         });
-                    }
+                    });
                 } else {
                     if (postSettings.generateLog || postSettings.generateLinks) {
                         if (isFF) {
@@ -7922,6 +8075,409 @@ async function cyberdrop_helper(apiUrl) {
 
     return null;
 }
+
+/* =========================================================================
+ *  THREAD DOWNLOADER — çoklu başlık kuyruğu, tüm sayfalar, parça limiti YOK
+ *  - Satır başına bir thread URL'si; kuyruk sırayla işlenir
+ *  - Sayfalar arası 3-5 sn rastgele bekleme (CF/rate-limit'e karşı)
+ *  - Her post kendi ZIP'i olur ve <Başlık>/<Başlık> #N.zip yoluna iner
+ * ========================================================================= */
+const XFPD_PAGE_DELAY_MIN_MS = 3000;   // sayfalar arası min bekleme
+const XFPD_PAGE_DELAY_MAX_MS = 5000;   // sayfalar arası max bekleme
+const XFPD_THREAD_GAP_MS = 8000;       // iki başlık arası bekleme
+const XFPD_POST_TIMEOUT_MS = 240000;   // bir post bu sürede bitmezse BEKLEMEYİ bırak, sıradakine geç
+                                       // (post arka planda devam eder, zip'i bitince yine de iner)
+
+const xfpdPageDelay = () =>
+    h.delayedResolve(XFPD_PAGE_DELAY_MIN_MS + Math.floor(Math.random() * (XFPD_PAGE_DELAY_MAX_MS - XFPD_PAGE_DELAY_MIN_MS + 1)));
+
+/* --- Kalıcı ilerleme durumu (tarayıcı çökse/kapansa bile GM deposunda kalır) ---
+ * Şekil: { queue: [{url,a,b}], ti, page, donePostIds: [], updatedAt }
+ * - ti: kuyrukta işlenen başlık indeksi
+ * - page: o başlıkta sıradaki sayfa
+ * - donePostIds: SADECE o sayfada bitmiş postlar (sayfa değişince sıfırlanır)
+ */
+const XFPD_STATE_KEY = 'xfpd_thread_state';
+const xfpdSaveState = st => { try { GM_setValue(XFPD_STATE_KEY, JSON.stringify({ ...st, updatedAt: Date.now() })); } catch (e) {} };
+const xfpdLoadState = () => {
+    try {
+        const raw = GM_getValue(XFPD_STATE_KEY, null);
+        if (!raw) return null;
+        const st = JSON.parse(raw);
+        if (!st || !Array.isArray(st.queue) || !st.queue.length) return null;
+        return st;
+    } catch (e) { return null; }
+};
+const xfpdClearState = () => { try { GM_setValue(XFPD_STATE_KEY, null); } catch (e) {} };
+
+const addDownloadThreadButton = () => {
+    const btn = document.createElement('a');
+    btn.setAttribute('id', 'download-thread');
+    btn.setAttribute('href', '#');
+    btn.setAttribute('class', 'button--link button rippleButton');
+
+    const span = document.createElement('span');
+    span.setAttribute('class', 'button-text');
+    span.innerText = '🡳 Download Thread';
+    btn.appendChild(span);
+
+    const buttonGroup = h.element('.buttonGroup');
+    if (buttonGroup) buttonGroup.prepend(btn);
+    else (document.querySelector('.p-body-header') || document.body).prepend(btn);
+    return btn;
+};
+
+const makeThreadStatusUI = () => {
+    const { el: statusEl } = ui.labels.status.createStatusLabel();
+    const filePB = ui.pBars.createFileProgressBar();
+    const totalPB = ui.pBars.createTotalProgressBar();
+
+    const wrap = document.createElement('div');
+    wrap.style.margin = '8px 0';
+    wrap.appendChild(statusEl);
+    wrap.appendChild(filePB);
+    wrap.appendChild(totalPB);
+
+    const anchor = h.element('.buttonGroup');
+    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(wrap, anchor);
+    else (document.querySelector('.p-body-main') || document.body).prepend(wrap);
+
+    h.hide(statusEl); h.hide(filePB); h.hide(totalPB);
+    return { status: statusEl, filePB, totalPB };
+};
+
+const xfpdDetectLastPage = (dom = document) => {
+    let last = 1;
+    try {
+        const links = [...dom.querySelectorAll('.pageNav-main a, .pageNav a, a.pageNav-page, .pageNavSimple a')];
+        for (const a of links) {
+            const m = /\/page-(\d+)/i.exec(a.getAttribute('href') || '');
+            if (m) last = Math.max(last, Number(m[1]));
+        }
+    } catch (e) {}
+    return last;
+};
+
+// Kuyruk girişi — çok satırlı modal (window.prompt çok satır desteklemez)
+const xfpdAskThreadQueue = () => new Promise(resolve => {
+    const currentUrl = location.href
+        .split('#')[0].split('?')[0]
+        .replace(/\/page-\d+\/?$/i, '')
+        .replace(/\/$/, '');
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#1c1c1e;color:#eee;padding:18px;border-radius:10px;width:640px;max-width:92vw;font-size:13px;box-shadow:0 8px 40px rgba(0,0,0,.5);';
+
+    const head = document.createElement('div');
+    head.style.cssText = 'font-weight:bold;font-size:15px;margin-bottom:8px;';
+    head.textContent = '🡳 Thread Downloader';
+    const hint = document.createElement('div');
+    hint.style.cssText = 'margin-bottom:8px;opacity:.8;line-height:1.5;';
+    hint.innerHTML = 'Satır başına bir thread URL\'si — hepsi sırayla, <b>tüm sayfalarıyla</b> indirilir.<br>' +
+        'İsteğe bağlı sayfa aralığı: <code>URL | 5-30</code>. ZIP\'ler <code>Başlık/Başlık #post.zip</code> olarak iner.';
+
+    const ta = document.createElement('textarea');
+    ta.style.cssText = 'width:100%;height:140px;background:#111;color:#eee;border:1px solid #444;border-radius:6px;padding:8px;font-family:monospace;font-size:12px;box-sizing:border-box;';
+    ta.value = currentUrl;
+
+    const err = document.createElement('div');
+    err.style.cssText = 'color:#e05c5c;margin-top:6px;min-height:16px;';
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'margin-top:10px;display:flex;gap:8px;justify-content:flex-end;';
+    const mkBtn = (txt, bg) => {
+        const b = document.createElement('button');
+        b.textContent = txt;
+        b.style.cssText = `background:${bg};color:#fff;border:0;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:13px;`;
+        return b;
+    };
+    const cancelBtn = mkBtn('İptal', '#555');
+    const okBtn = mkBtn('Başlat', '#2d9053');
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(okBtn);
+
+    // Yarım kalan indirme varsa "devam et" bandı göster
+    const saved = xfpdLoadState();
+    let resumeBar = null;
+    if (saved) {
+        resumeBar = document.createElement('div');
+        resumeBar.style.cssText = 'background:#26323a;border:1px solid #3a6ea5;border-radius:6px;padding:10px;margin-bottom:8px;display:flex;align-items:center;gap:10px;';
+        const info = document.createElement('div');
+        info.style.cssText = 'flex:1;line-height:1.5;min-width:0;';
+        const when = new Date(saved.updatedAt || Date.now()).toLocaleString();
+        const sTi = Math.min(saved.ti || 0, saved.queue.length - 1);
+        const sCur = saved.queue[sTi];
+        const sRest = saved.queue.length - sTi - 1;
+
+        const headLine = document.createElement('div');
+        headLine.innerHTML = `<b>Yarım kalan indirme var</b> · ${saved.queue.length} başlıklı kuyruk, ${sTi + 1}. başlıkta · ${when}`;
+        info.appendChild(headLine);
+
+        const curLine = document.createElement('div');
+        curLine.style.cssText = 'margin-top:4px;';
+        const curStrong = document.createElement('b');
+        curStrong.textContent = saved.curTitle || '(başlık adı kaydedilmemiş)';
+        curLine.appendChild(document.createTextNode('▶ Devam edilecek başlık: '));
+        curLine.appendChild(curStrong);
+        curLine.appendChild(document.createTextNode(` — sayfa ${saved.page || 1}`));
+        info.appendChild(curLine);
+
+        const curUrlLine = document.createElement('div');
+        curUrlLine.style.cssText = 'opacity:.65;font-family:monospace;font-size:11px;word-break:break-all;';
+        curUrlLine.textContent = sCur ? sCur.url : '?';
+        info.appendChild(curUrlLine);
+
+        if (sRest > 0) {
+            const restHead = document.createElement('div');
+            restHead.style.cssText = 'opacity:.85;margin-top:4px;';
+            restHead.textContent = `Onun ardından sırada ${sRest} başlık daha var:`;
+            info.appendChild(restHead);
+            const restList = document.createElement('div');
+            restList.style.cssText = 'opacity:.55;font-family:monospace;font-size:11px;word-break:break-all;white-space:pre-line;';
+            restList.textContent = saved.queue.slice(sTi + 1, sTi + 4).map(q => q.url).join('\n') +
+                (sRest > 3 ? `\n… ve ${sRest - 3} başlık daha` : '');
+            info.appendChild(restList);
+        }
+        const resumeBtn = mkBtn('▶ Devam et', '#2d6ea5');
+        const trashBtn = mkBtn('🗑', '#7a3030');
+        trashBtn.title = 'Kaydı sil';
+        resumeBar.appendChild(info); resumeBar.appendChild(resumeBtn); resumeBar.appendChild(trashBtn);
+        resumeBtn.addEventListener('click', () => close({ type: 'resume', state: saved }));
+        trashBtn.addEventListener('click', () => { xfpdClearState(); resumeBar.remove(); });
+    }
+
+    box.appendChild(head); box.appendChild(hint);
+    if (resumeBar) box.appendChild(resumeBar);
+    box.appendChild(ta); box.appendChild(err); box.appendChild(btnRow);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    ta.focus(); ta.select();
+
+    const close = v => { overlay.remove(); resolve(v); };
+    cancelBtn.addEventListener('click', () => close(null));
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(null); });
+
+    okBtn.addEventListener('click', () => {
+        const items = [];
+        for (const lineRaw of ta.value.split('\n')) {
+            const line = lineRaw.trim();
+            if (!line) continue;
+            const [urlPart, rangePart] = line.split('|').map(s => s.trim());
+            if (!/^https?:\/\//i.test(urlPart)) {
+                err.textContent = `Geçersiz URL: ${h.limit(line, 60)}`;
+                return;
+            }
+            let a = null, b = null;
+            if (rangePart) {
+                const m = /^(\d+)\s*-\s*(\d+)$/.exec(rangePart);
+                if (!m) { err.textContent = `Geçersiz aralık (örnek: 5-30): ${h.limit(line, 60)}`; return; }
+                a = Number(m[1]); b = Number(m[2]);
+                if (b < a) { err.textContent = `Bitiş < başlangıç: ${rangePart}`; return; }
+            }
+            items.push({ url: urlPart, a, b });
+        }
+        if (!items.length) { err.textContent = 'En az bir URL gir.'; return; }
+        // Yarım kalan iş varken yeni iş başlatmak eski kaydı SİLER -> onay iste
+        const pending = xfpdLoadState();
+        if (pending) {
+            const pCur = pending.queue[Math.min(pending.ti || 0, pending.queue.length - 1)];
+            const ok = window.confirm(
+                'DİKKAT: Yarım kalan bir indirme kaydı var:\n' +
+                `${pending.curTitle || (pCur ? pCur.url : '?')} — sayfa ${pending.page || 1}\n\n` +
+                '"Başlat" yeni bir iş başlatır ve bu kaydı kalıcı olarak SİLER.\n' +
+                'Eski işe dönmek için bunu iptal edip "▶ Devam et"e bas.\n\n' +
+                'Yine de yeni iş başlatılsın mı?',
+            );
+            if (!ok) return;
+        }
+        close({ type: 'new', items });
+    });
+});
+
+const downloadThreads = async (queue, statusUI, resume = null) => {
+    const getEnabledHostsCB = hs => hs.filter(x => x.enabled);
+
+    // İlerleme durumu: her post/sayfa sınırında GM deposuna yazılır,
+    // tarayıcı çökerse modaldeki "▶ Devam et" kaldığı yerden sürdürür.
+    const state = {
+        queue,
+        ti: resume ? (resume.ti || 0) : 0,
+        page: resume ? (resume.page || null) : null,
+        donePostIds: resume ? (resume.donePostIds || []) : [],
+        curTitle: resume ? (resume.curTitle || null) : null,
+    };
+    xfpdSaveState(state);
+
+    // ZIP AÇIK: her post tek zip olarak iner. Takılan post watchdog ile atlanır ama
+    // arka planda devam ettiği için zip'i bitince yine de kaydedilir.
+    const threadSettings = {
+        zipped: true,
+        flatten: false,
+        generateLinks: false,
+        generateLog: false,
+        skipDuplicates: true,
+        skipDownload: false,
+        verifyBunkrLinks: false,
+        output: [],
+    };
+
+    h.show(statusUI.status);
+    const summary = [];
+
+    for (let ti = state.ti; ti < queue.length; ti++) {
+        if (window.__xfpdStopRequested) break;
+        const item = queue[ti];
+        const threadBase = item.url
+            .split('#')[0].split('?')[0]
+            .replace(/\/page-\d+\/?$/i, '')
+            .replace(/\/$/, '');
+        const tPrefix = queue.length > 1 ? `🧵 ${ti + 1}/${queue.length} · ` : '';
+
+        // 1. sayfa: başlık adı + son sayfa numarası buradan
+        h.ui.setElProps(statusUI.status, { color: '#469cf3', fontWeight: 'bold' });
+        h.ui.setText(statusUI.status, `${tPrefix}Başlık bilgisi çekiliyor...`);
+        let firstDom = null;
+        try { ({ dom: firstDom } = await h.http.get(threadBase)); } catch (e) { firstDom = null; }
+        if (!firstDom || !firstDom.querySelector('.p-title-value')) {
+            log.write('thread', `[THREAD] Başlık açılamadı: ${threadBase}`, 'ERROR');
+            summary.push(`✗ açılamadı: ${h.limit(threadBase, 50)}`);
+            continue;
+        }
+
+        const threadTitle = parsers.thread.parseTitle(firstDom);
+        const lastPage = xfpdDetectLastPage(firstDom);
+        const a = Math.max(1, item.a || 1);
+        const b = Math.min(item.b || lastPage, Math.max(lastPage, item.b || 1));
+
+        // Devam modunda: bu başlık yarım kaldıysa kaldığı sayfadan başla,
+        // o sayfada bitmiş postları atla. Sonraki başlıklar normal başlar.
+        const isResumedThread = !!(resume && ti === (resume.ti || 0));
+        const startPage = isResumedThread ? Math.max(a, state.page || a) : a;
+        let doneOnPage = new Set(isResumedThread ? state.donePostIds : []);
+
+        // downloadPost() içindeki parseTitle() bu başlığın adını görsün
+        window.__xfpdTitleOverride = threadTitle;
+        let donePosts = 0, skippedPages = 0;
+
+        state.ti = ti;
+        state.page = startPage;
+        state.donePostIds = [...doneOnPage];
+        state.curTitle = threadTitle;
+        xfpdSaveState(state);
+
+        try {
+            for (let p = startPage; p <= b; p++) {
+                if (window.__xfpdStopRequested) break;
+
+                let dom = null;
+                if (p === 1) {
+                    dom = firstDom; // zaten elimizde, tekrar çekme
+                } else {
+                    h.ui.setElProps(statusUI.status, { color: '#469cf3', fontWeight: 'bold' });
+                    h.ui.setText(statusUI.status, `${tPrefix}📄 ${h.limit(threadTitle, 40)} — sayfa ${p}/${b} çekiliyor...`);
+                    try { ({ dom } = await h.http.get(`${threadBase}/page-${p}`)); } catch (e) { dom = null; }
+                }
+                if (!dom) {
+                    skippedPages++;
+                    log.write('thread', `[THREAD] Sayfa çekilemedi: ${threadBase}/page-${p}`, 'ERROR');
+                    if (p < b) await xfpdPageDelay();
+                    continue;
+                }
+
+                const postNodes = [...dom.querySelectorAll('.message-attribution-opposite')];
+
+                for (const node of postNodes) {
+                    if (window.__xfpdStopRequested) break;
+
+                    let parsedPost, parsedHosts;
+                    try {
+                        parsedPost = parsers.thread.parsePost(node);
+                        parsedHosts = parsers.hosts.parseHosts(parsedPost.content);
+                    } catch (e) { continue; }
+
+                    if (!parsedHosts.length) continue;
+
+                    // Devam modunda bu sayfada zaten bitmiş post -> atla
+                    if (doneOnPage.has(String(parsedPost.postId))) continue;
+
+                    h.ui.setElProps(statusUI.status, { color: '#469cf3', fontWeight: 'bold' });
+                    h.ui.setText(statusUI.status, `${tPrefix}📄 ${p}/${b} · Post #${parsedPost.postNumber} indiriliyor...`);
+
+                    try {
+                        // Watchdog: post XFPD_POST_TIMEOUT_MS içinde bitmezse beklemeyi bırak,
+                        // sıradakine geç. Post arka planda sürer; zip'i bitince yine de iner.
+                        const dl = downloadPost(
+                            parsedPost,
+                            parsedHosts,
+                            getEnabledHostsCB,
+                            resolvers,
+                            () => threadSettings,
+                            statusUI,
+                            {},
+                        ).then(() => 'done', () => 'error');
+                        const watchdog = new Promise(res => setTimeout(() => res('timeout'), XFPD_POST_TIMEOUT_MS));
+                        const outcome = await Promise.race([dl, watchdog]);
+                        if (outcome === 'timeout') {
+                            log.write('thread', `[THREAD] Post #${parsedPost.postNumber} ${Math.round(XFPD_POST_TIMEOUT_MS / 60000)}dk'da bitmedi -> beklenmedi (arka planda sürüyor)`, 'WARNING');
+                            h.ui.setElProps(statusUI.status, { color: '#b58b00', fontWeight: 'bold' });
+                            h.ui.setText(statusUI.status, `${tPrefix}⏭️ Post #${parsedPost.postNumber} yavaş, beklenmedi`);
+                        } else {
+                            donePosts++;
+                        }
+                        // İlerlemeyi kaydet (timeout dahil: post zaten gönderildi, tekrar indirme)
+                        doneOnPage.add(String(parsedPost.postId));
+                        state.donePostIds = [...doneOnPage];
+                        xfpdSaveState(state);
+                    } catch (e) {
+                        log.write('thread', `[THREAD] Post #${parsedPost.postNumber} hata: ${e?.message || e}`, 'ERROR');
+                    }
+                }
+
+                if (window.__xfpdStopRequested) break;
+
+                // Sayfa bitti -> sıradaki sayfayı işaretle (çökmede buradan devam edilir)
+                doneOnPage = new Set();
+                state.page = p + 1;
+                state.donePostIds = [];
+                xfpdSaveState(state);
+
+                if (p < b) await xfpdPageDelay();
+            }
+        } finally {
+            window.__xfpdTitleOverride = null;
+        }
+
+        summary.push(`${window.__xfpdStopRequested ? '⏹' : '✓'} ${h.limit(threadTitle, 30)}: ${donePosts} post${skippedPages ? `, ${skippedPages} sayfa atlandı` : ''}`);
+
+        if (!window.__xfpdStopRequested) {
+            // Başlık tamamlandı -> kuyrukta sıradakine geç
+            state.ti = ti + 1;
+            state.page = null;
+            state.donePostIds = [];
+            state.curTitle = null;
+            xfpdSaveState(state);
+        }
+
+        if (ti < queue.length - 1 && !window.__xfpdStopRequested) {
+            h.ui.setText(statusUI.status, `${tPrefix}Sonraki başlığa geçiliyor...`);
+            await h.delayedResolve(XFPD_THREAD_GAP_MS);
+        }
+    }
+
+    if (window.__xfpdStopRequested) {
+        // Kayıt SİLİNMEZ -> butona tekrar basınca "▶ Devam et" çıkar
+        h.ui.setElProps(statusUI.status, { color: '#b58b00', fontWeight: 'bold' });
+        h.show(statusUI.status);
+        h.ui.setText(statusUI.status, '⏹ Durduruldu — ' + summary.join(' · ') + ' · (butondan devam edebilirsin)');
+    } else {
+        xfpdClearState();
+        h.ui.setElProps(statusUI.status, { color: '#2d9053', fontWeight: 'bold' });
+        h.show(statusUI.status);
+        h.ui.setText(statusUI.status, '✓ Bitti — ' + summary.join(' · '));
+    }
+};
 
 const parsedPosts = [];
 const selectedPosts = [];
@@ -8141,5 +8697,37 @@ const selectedPosts = [];
                 },
             });
         }
+
+        // === Thread Downloader (çoklu başlık kuyruğu, tüm sayfalar) ===
+        try {
+            const btnThread = addDownloadThreadButton();
+            const threadStatusUI = makeThreadStatusUI();
+            let threadRunning = false;
+            const btnSpan = btnThread.querySelector('.button-text');
+            btnThread.addEventListener('click', async e => {
+                e.preventDefault();
+                if (threadRunning) {
+                    // Çalışırken tıklama = durdurma isteği (sıradaki post/sayfa sınırında durur)
+                    window.__xfpdStopRequested = true;
+                    btnSpan.innerText = '⏳ Durduruluyor...';
+                    return;
+                }
+                const choice = await xfpdAskThreadQueue();
+                if (!choice) return;
+                const resume = choice.type === 'resume' ? choice.state : null;
+                const queue = resume ? resume.queue : choice.items;
+                if (!queue || !queue.length) return;
+                threadRunning = true;
+                window.__xfpdStopRequested = false;
+                btnSpan.innerText = '⏹ Durdur';
+                try { await downloadThreads(queue, threadStatusUI, resume); }
+                catch (err) { console.error(err); }
+                finally {
+                    threadRunning = false;
+                    window.__xfpdStopRequested = false;
+                    btnSpan.innerText = '🡳 Download Thread';
+                }
+            });
+        } catch (e) { console.error('Thread button init failed', e); }
     });
 })();
