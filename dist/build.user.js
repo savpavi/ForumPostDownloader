@@ -4,7 +4,7 @@
 // @namespace https://github.com/SkyCloudDev
 // @author SkyCloudDev
 // @description Downloads images and videos from posts
-// @version 3.20
+// @version 3.21
 // @updateURL https://github.com/savpavi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/savpavi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -8096,38 +8096,69 @@ const xfpdPageDelay = () =>
 // (registerPostReaction sadece açık sayfada çalışır). Onun yerine reaksiyon, çekilen
 // sayfadaki CSRF token (_xfToken) ile XenForo'nun react endpoint'ine POST edilir.
 const xfpdReactToPost = async (parsedPost, pageDom) => {
+    const tag = `[THREAD] Post #${parsedPost?.postNumber} beğeni`;
     try {
         const footer = parsedPost.footer;
-        if (!footer) return false;
+        if (!footer) { log.write('thread', `${tag}: footer bulunamadı`, 'WARNING'); return false; }
         if (footer.querySelector('.has-reaction')) return false; // zaten reaksiyon bırakılmış
 
         const anchor = footer.querySelector('.reaction--imageHidden') || footer.querySelector('a[href*="/react?reaction_id="]');
-        if (!anchor) return false;
-
-        const token =
-            pageDom?.querySelector('input[name="_xfToken"]')?.getAttribute('value') ||
-            pageDom?.documentElement?.getAttribute('data-csrf') ||
-            document.querySelector('input[name="_xfToken"]')?.getAttribute('value') ||
-            document.documentElement?.getAttribute('data-csrf');
-        if (!token) return false;
+        if (!anchor) { log.write('thread', `${tag}: reaksiyon linki bulunamadı`, 'WARNING'); return false; }
 
         const href = anchor.getAttribute('href').replace('_id=1', '_id=33');
         const reactUrl = new URL(href, location.origin).href;
 
-        await h.http.post(
-            reactUrl,
-            `_xfToken=${encodeURIComponent(token)}`,
-            {},
-            {
-                Referer: location.href,
-                Origin: location.origin,
-                'Content-Type': 'application/x-www-form-urlencoded',
-                __xfpd_withCredentials: true,
-            },
-        );
-        return true;
+        const postReact = async token => {
+            const { status, source } = await h.http.post(
+                reactUrl,
+                `_xfToken=${encodeURIComponent(token)}`,
+                {},
+                {
+                    Referer: location.href,
+                    Origin: location.origin,
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    __xfpd_withCredentials: true,
+                },
+            );
+            const ok = status >= 200 && status < 400 && !/security error|güvenlik hatası/i.test(String(source || ''));
+            return { ok, status, source };
+        };
+
+        const pageToken =
+            pageDom?.querySelector('input[name="_xfToken"]')?.getAttribute('value') ||
+            pageDom?.documentElement?.getAttribute('data-csrf') ||
+            document.querySelector('input[name="_xfToken"]')?.getAttribute('value') ||
+            document.documentElement?.getAttribute('data-csrf');
+
+        let result = null;
+        if (pageToken) {
+            result = await postReact(pageToken);
+        } else {
+            log.write('thread', `${tag}: sayfada _xfToken yok, onay formu denenecek`, 'WARNING');
+        }
+
+        // İlk deneme tutmadıysa: react URL'ini GET'le, XenForo'nun onay formundaki
+        // taze _xfToken ile tekrar POST et (JS'siz tarayıcıların izlediği resmi yol).
+        if (!result || !result.ok) {
+            if (result) log.write('thread', `${tag}: ilk deneme HTTP ${result.status}, onay formu deneniyor...`, 'WARNING');
+            const { dom: confirmDom } = await h.http.get(reactUrl, {}, { __xfpd_withCredentials: true });
+            const formToken = confirmDom?.querySelector('input[name="_xfToken"]')?.getAttribute('value');
+            if (formToken) {
+                result = await postReact(formToken);
+            } else {
+                log.write('thread', `${tag}: onay formunda da _xfToken yok (oturum görünmüyor olabilir)`, 'WARNING');
+            }
+        }
+
+        if (result && result.ok) {
+            log.write('thread', `${tag}: beğenildi ✓`, 'INFO');
+            return true;
+        }
+        const snippet = String(result?.source || '').replace(/\s+/g, ' ').slice(0, 200);
+        log.write('thread', `${tag}: BAŞARISIZ (HTTP ${result ? result.status : '-'}) ${snippet}`, 'WARNING');
+        return false;
     } catch (e) {
-        log.write('thread', `[THREAD] Post #${parsedPost?.postNumber} beğenilemedi: ${e?.message || e}`, 'WARNING');
+        log.write('thread', `${tag}: hata: ${e?.message || e}`, 'WARNING');
         return false;
     }
 };
