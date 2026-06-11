@@ -51,6 +51,10 @@ Zaten orijinal script kuruluysa: Tampermonkey → script'i aç → Düzenle →
 >   her zaman en son yarım kalan kuyruğu sürdürür, o an açık olan başlıkla ilgisi yoktur.
 > - **Başlat koruması (v2.2):** yarım kalan kayıt varken "Başlat"a basılırsa onay sorar
 >   (yeni iş eski kaydı kalıcı siler — eskiden sessizce eziliyordu, tek başlık indiriyor sanılıyordu).
+> - **Oto-beğeni thread modunda da (v2.3, 2026-06-11):** indirilen her post otomatik beğenilir —
+>   tekil indirmedeki davranışın aynısı. Post canlı DOM'da olmadığı için link tıklanmaz;
+>   reaksiyon, çekilen sayfadaki `_xfToken` (CSRF) ile react endpoint'ine arka planda POST edilir.
+>   Zaten reaksiyon bırakılmış postlar atlanır. Kapatmak için: `XFPD_THREAD_AUTOLIKE = false`.
 >
 > ### ⚠️ Zen/Firefox OOM uyarısı (tarayıcının "kapanması")
 > İndirme sırasında `/tmp` doluyordu — CachyOS'ta `/tmp` RAM tabanlı (tmpfs, ~31G).

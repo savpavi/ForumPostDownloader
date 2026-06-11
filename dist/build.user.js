@@ -4,7 +4,7 @@
 // @namespace https://github.com/SkyCloudDev
 // @author SkyCloudDev
 // @description Downloads images and videos from posts
-// @version 3.19
+// @version 3.20
 // @updateURL https://github.com/savpavi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/savpavi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -8087,9 +8087,50 @@ const XFPD_PAGE_DELAY_MAX_MS = 5000;   // sayfalar arası max bekleme
 const XFPD_THREAD_GAP_MS = 8000;       // iki başlık arası bekleme
 const XFPD_POST_TIMEOUT_MS = 240000;   // bir post bu sürede bitmezse BEKLEMEYİ bırak, sıradakine geç
                                        // (post arka planda devam eder, zip'i bitince yine de iner)
+const XFPD_THREAD_AUTOLIKE = true;     // thread modunda indirilen postlara oto-beğeni (tekil indirmedeki davranışın aynısı)
 
 const xfpdPageDelay = () =>
     h.delayedResolve(XFPD_PAGE_DELAY_MIN_MS + Math.floor(Math.random() * (XFPD_PAGE_DELAY_MAX_MS - XFPD_PAGE_DELAY_MIN_MS + 1)));
+
+// Thread modunda oto-beğeni: post canlı DOM'da olmadığından anchor.click() işe yaramaz
+// (registerPostReaction sadece açık sayfada çalışır). Onun yerine reaksiyon, çekilen
+// sayfadaki CSRF token (_xfToken) ile XenForo'nun react endpoint'ine POST edilir.
+const xfpdReactToPost = async (parsedPost, pageDom) => {
+    try {
+        const footer = parsedPost.footer;
+        if (!footer) return false;
+        if (footer.querySelector('.has-reaction')) return false; // zaten reaksiyon bırakılmış
+
+        const anchor = footer.querySelector('.reaction--imageHidden') || footer.querySelector('a[href*="/react?reaction_id="]');
+        if (!anchor) return false;
+
+        const token =
+            pageDom?.querySelector('input[name="_xfToken"]')?.getAttribute('value') ||
+            pageDom?.documentElement?.getAttribute('data-csrf') ||
+            document.querySelector('input[name="_xfToken"]')?.getAttribute('value') ||
+            document.documentElement?.getAttribute('data-csrf');
+        if (!token) return false;
+
+        const href = anchor.getAttribute('href').replace('_id=1', '_id=33');
+        const reactUrl = new URL(href, location.origin).href;
+
+        await h.http.post(
+            reactUrl,
+            `_xfToken=${encodeURIComponent(token)}`,
+            {},
+            {
+                Referer: location.href,
+                Origin: location.origin,
+                'Content-Type': 'application/x-www-form-urlencoded',
+                __xfpd_withCredentials: true,
+            },
+        );
+        return true;
+    } catch (e) {
+        log.write('thread', `[THREAD] Post #${parsedPost?.postNumber} beğenilemedi: ${e?.message || e}`, 'WARNING');
+        return false;
+    }
+};
 
 /* --- Kalıcı ilerleme durumu (tarayıcı çökse/kapansa bile GM deposunda kalır) ---
  * Şekil: { queue: [{url,a,b}], ti, page, donePostIds: [], updatedAt }
@@ -8425,6 +8466,10 @@ const downloadThreads = async (queue, statusUI, resume = null) => {
                             h.ui.setText(statusUI.status, `${tPrefix}⏭️ Post #${parsedPost.postNumber} yavaş, beklenmedi`);
                         } else {
                             donePosts++;
+                            // Oto-beğeni: tekil indirmedeki onComplete davranışının thread modu karşılığı
+                            if (XFPD_THREAD_AUTOLIKE) {
+                                await xfpdReactToPost(parsedPost, dom);
+                            }
                         }
                         // İlerlemeyi kaydet (timeout dahil: post zaten gönderildi, tekrar indirme)
                         doneOnPage.add(String(parsedPost.postId));
