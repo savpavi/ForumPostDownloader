@@ -19,6 +19,8 @@ SimpCity (should work on any XenForo forum).
   - Clean stop: press the button again while running and it stops at the next post boundary
   - Rate-limit friendly: random 3–5 s delay between pages, 8 s between threads
   - Each post is saved as its own ZIP (`Thread Title/Thread Title #post.zip`)
+  - Auto-reacts to each downloaded post, same as the original script does for
+    single-post downloads (set `XFPD_THREAD_AUTOLIKE = false` in the script to disable)
 - **New hosts:** imgur, erome, saint, catbox, litterbox, streamable, imgchest
 - **Bug fixes:**
   - Crash on DIRECT downloads (`h.extension` → `h.ext`)
